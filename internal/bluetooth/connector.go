@@ -13,7 +13,7 @@ import (
 	"pible/internal/util"
 )
 
-func ConnectAndDumpGATT(ctx context.Context, adapter *tg.Adapter, addr tg.Address, displayName, adapterID string, store *db.Store, resolver *ids.Resolver, sessionID int64, tag *string) error {
+func ConnectAndDumpGATT(ctx context.Context, adapter *tg.Adapter, addr tg.Address, displayName, adapterLabel string, store *db.Store, resolver *ids.Resolver, sessionID int64, tag *string) error {
 	params := tg.ConnectionParams{ConnectionTimeout: tg.NewDuration(15 * time.Second)}
 	dev, err := adapter.Connect(addr, params)
 	if err != nil {
@@ -77,7 +77,7 @@ func ConnectAndDumpGATT(ctx context.Context, adapter *tg.Adapter, addr tg.Addres
 	_ = store.InsertGattServicesHistory(ctx, sessionID, addrStr, serviceList, now)
 
 	nameCopy := util.SafeName(displayName)
-	adapterCopy := adapterID
+	adapterCopy := adapterLabel
 	serviceCopy := serviceList
 
 	var tagCopy *string

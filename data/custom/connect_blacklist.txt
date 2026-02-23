@@ -1,0 +1,16 @@
+# Connection blacklist
+# One keyword per line. Case-insensitive substring match.
+# Examples:
+#   iPhone
+#   iPad
+#   ResMed
+#
+# If the device name contains the keyword, the program will NOT connect to it,
+# but will still record advertisements and update the database.
+
+# Apple devices
+iphone
+ipad
+
+# Medical devices (example)
+resmed

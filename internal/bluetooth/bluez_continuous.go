@@ -35,6 +35,7 @@ func StartContinuousScanAndConnectMulti(
 	sessionID int64,
 	maxConnectTotal int,
 	tag *string,
+	blacklist *ConnectBlacklist,
 ) error {
 	if len(adapterIDs) == 0 {
 		return errors.New("no adapters")
@@ -71,7 +72,7 @@ func StartContinuousScanAndConnectMulti(
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			runManagedAdapterLoop(ctx, adapterID, store, gpsState, resolver, patterns, sessionID, maxConn, tag)
+			runManagedAdapterLoop(ctx, adapterID, store, gpsState, resolver, patterns, sessionID, maxConn, tag, blacklist)
 		}()
 	}
 
@@ -123,8 +124,11 @@ func runBlueZDiscoveryLoop(
 	sessionID int64,
 	maxConnect int,
 	tag *string,
+	blacklist *ConnectBlacklist,
 ) error {
 	cfg := defaultBlueZConfig()
+
+	adapterLabel := AdapterDisplayName(adapterID)
 
 	conn, err := dbus.SystemBus()
 	if err != nil {
@@ -170,7 +174,7 @@ func runBlueZDiscoveryLoop(
 	queue := make(chan string, cfg.ConnectQueueSize)
 	doneCh := make(chan string, cfg.ConnectQueueSize)
 	for i := 0; i < maxConnect; i++ {
-		go bluezConnectWorker(ctx, conn, adapterID, store, resolver, patterns, sessionID, tag, queue, doneCh)
+		go bluezConnectWorker(ctx, conn, adapterID, adapterLabel, store, resolver, patterns, sessionID, tag, queue, doneCh)
 	}
 
 	known := make(map[string]bool, 8192)
@@ -218,6 +222,9 @@ func runBlueZDiscoveryLoop(
 		}
 
 		now := time.Now()
+		if blacklist != nil {
+			blacklist.MaybeReload()
+		}
 		for mac, bd := range snap {
 			select {
 			case <-ctx.Done():
@@ -288,7 +295,7 @@ func runBlueZDiscoveryLoop(
 			svcUUIDJSON := jsonOrEmptyArray(serviceUUIDs)
 			svcDataJSON := jsonOrEmptyArray(svcEntries)
 
-			advJSON := buildAdvertisementJSONBlueZ(adapterID, bd, name, serviceUUIDs, mfgEntries, svcEntries)
+			advJSON := buildAdvertisementJSONBlueZ(adapterID, adapterLabel, bd, name, serviceUUIDs, mfgEntries, svcEntries)
 
 			// Special marker detection (e.g., Coke-ON) from raw UUIDs + manufacturer data.
 			markedTypeStr := DetectTypedDevice(patterns, bd.UUIDs, mfgEntries, bd.Name)
@@ -326,7 +333,7 @@ func runBlueZDiscoveryLoop(
 				// Full device write.
 				lastDeviceWrite[mac] = now
 				if seenCount[mac] > 1 {
-					util.Linef("[UPDATE]", util.ColorGreen, "%s (Interface: %s) RSSI: %s", name, adapterID, rssiStr(bd.RSSI))
+					util.Linef("[UPDATE]", util.ColorYellow, "%s (Interface: %s) RSSI: %s", name, adapterID, rssiStr(bd.RSSI))
 				}
 
 				// Record/refresh GPS in DB + history.
@@ -342,7 +349,7 @@ func runBlueZDiscoveryLoop(
 
 				// Upsert device.
 				nameCopy := name
-				adapterCopy := adapterID
+				adapterCopy := adapterLabel
 				devTypeCopy := devType
 				macTypeCopy := macType
 				macSubCopy := macSub
@@ -448,6 +455,10 @@ func runBlueZDiscoveryLoop(
 				continue
 			}
 
+			if blacklist != nil && blacklist.Match(name) {
+				continue
+			}
+
 			hasGatt, _ := store.HasGattServices(ctx, mac)
 			if hasGatt {
 				continue
@@ -507,10 +518,11 @@ func annotateUUIDs(resolver *ids.Resolver, uuids []string) []string {
 	return out
 }
 
-func buildAdvertisementJSONBlueZ(adapterID string, bd bluezDevice, name string, serviceUUIDs []string, mfg []manufacturerEntry, svc []serviceDataEntry) *string {
+func buildAdvertisementJSONBlueZ(adapterID string, adapterLabel string, bd bluezDevice, name string, serviceUUIDs []string, mfg []manufacturerEntry, svc []serviceDataEntry) *string {
 	payload := map[string]any{
 		"source":        "bluez",
 		"adapter":       adapterID,
+		"adapter_label": strings.TrimSpace(adapterLabel),
 		"local_name":    strings.TrimSpace(name),
 		"service_uuids": serviceUUIDs,
 		"manufacturer":  mfg,
@@ -552,6 +564,7 @@ func bluezConnectWorker(
 	ctx context.Context,
 	conn *dbus.Conn,
 	adapterID string,
+	adapterLabel string,
 	store *db.Store,
 	resolver *ids.Resolver,
 	patterns *DeviceTypePatterns,
@@ -569,7 +582,7 @@ func bluezConnectWorker(
 				continue
 			}
 			jobCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
-			err := ConnectAndDumpGATTBlueZ(jobCtx, conn, adapterID, mac, store, resolver, patterns, sessionID, tag)
+			err := ConnectAndDumpGATTBlueZ(jobCtx, conn, adapterID, adapterLabel, mac, store, resolver, patterns, sessionID, tag)
 			cancel()
 			if err != nil {
 				// Best-effort: do not spam logs for common transient issues.
@@ -591,6 +604,7 @@ func ConnectAndDumpGATTBlueZ(
 	ctx context.Context,
 	conn *dbus.Conn,
 	adapterID string,
+	adapterLabel string,
 	mac string,
 	store *db.Store,
 	resolver *ids.Resolver,
@@ -642,7 +656,7 @@ func ConnectAndDumpGATTBlueZ(
 	_ = store.InsertGattServicesHistory(ctx, sessionID, mac, servicesText, ts)
 
 	nameCopy := util.SafeName(devName)
-	adapterCopy := adapterID
+	adapterCopy := adapterLabel
 	serviceCopy := servicesText
 	typeCopy := "ble"
 
@@ -658,7 +672,7 @@ func ConnectAndDumpGATTBlueZ(
 		Tag:            tag,
 	})
 
-	util.Linef("[CONNECTED]", util.ColorGreen, "%s (%s) via %s", nameCopy, mac, adapterID)
+	util.Linef("[CONNECTED]", util.ColorGreen, "%s (%s) via %s", nameCopy, mac, adapterLabel)
 	return nil
 }
 

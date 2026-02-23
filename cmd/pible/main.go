@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -33,6 +34,8 @@ func main() {
 		restartBlueZSvc = flag.Bool("restart-bluetooth", true, "Preflight: restart bluetooth service if adapters are missing (requires root + systemctl)")
 		bluezCacheMode  = flag.String("bluez-cache", "auto", "Preflight: BlueZ device cache cleanup mode: auto|off|force")
 		statsInterval   = flag.Int("stats-interval", 5, "Console status interval in seconds")
+
+		connectBlacklistFlag = flag.String("connect-blacklist", "", "Path to connection blacklist file (keywords; case-insensitive substring match). If empty, uses <custom data dir>/connect_blacklist.txt when present.")
 	)
 	flag.Parse()
 
@@ -67,6 +70,23 @@ func main() {
 		// Non-fatal: scanning still works without type detection.
 		patterns = nil
 		util.Linef("[WARN]", util.ColorYellow, "failed to load device type patterns: %v", perr)
+	}
+
+	// Connection blacklist (optional).
+	blacklistPath := strings.TrimSpace(*connectBlacklistFlag)
+	if blacklistPath == "" {
+		customDir := strings.TrimSpace(*customDataFlag)
+		if customDir == "" {
+			customDir = filepath.Join(strings.TrimSpace(*dataDirFlag), "custom")
+		}
+		blacklistPath = filepath.Join(customDir, "connect_blacklist.txt")
+	}
+	blacklist, blErr := bluetooth.LoadConnectBlacklist(blacklistPath)
+	if blErr != nil {
+		util.Linef("[WARN]", util.ColorYellow, "failed to load connect blacklist: %v", blErr)
+		blacklist = nil
+	} else if blacklist != nil {
+		util.Linef("[FILTER]", util.ColorGray, "connect blacklist: %d keywords (%s)", len(blacklist.Keywords()), blacklist.Path())
 	}
 
 	// GPS selection.
@@ -157,6 +177,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	displayByID := make(map[string]string, len(interfaces))
+	for _, inf := range interfaces {
+		displayByID[inf.ID] = inf.DisplayName
+	}
+
 	chosenAdapters, err := selectAdapters(interfaces, strings.TrimSpace(*adaptersFlag), *adapterIndexFlg)
 	if err != nil {
 		util.Linef("[ERROR]", util.ColorYellow, "%v", err)
@@ -166,7 +191,9 @@ func main() {
 		util.Line("[ERROR]", util.ColorYellow, "no adapters selected")
 		os.Exit(1)
 	}
+
 	adaptersJoined := strings.Join(chosenAdapters, ",")
+	adaptersJoinedDisplay := joinAdaptersDisplay(chosenAdapters, displayByID)
 
 	// Preflight: ensure adapters are visible to BlueZ and optionally clear runtime cache.
 	cache := strings.ToLower(strings.TrimSpace(*bluezCacheMode))
@@ -202,17 +229,17 @@ func main() {
 	if s := gpsState.GPSStringForRecord(); s != nil {
 		gpsStart = s
 	}
-	sessionID, err := store.CreateSession(ctx, adaptersJoined, tagPtr, gpsStart)
+	sessionID, err := store.CreateSession(ctx, adaptersJoinedDisplay, tagPtr, gpsStart)
 	if err != nil {
 		util.Linef("[ERROR]", util.ColorYellow, "failed to create scan session: %v", err)
 		os.Exit(1)
 	}
-	util.Linef("[SESSION]", util.ColorGray, "id=%d adapters=%s", sessionID, adaptersJoined)
+	util.Linef("[SESSION]", util.ColorGray, "id=%d adapters=%s", sessionID, adaptersJoinedDisplay)
 
 	// Periodic status (GPS/DB/Battery).
 	go status.Run(ctx, time.Duration(*statsInterval)*time.Second, status.Provider{GPS: gpsState, Store: store})
 
-	if err := bluetooth.StartContinuousScanAndConnectMulti(ctx, chosenAdapters, store, gpsState, resolver, patterns, sessionID, maxConn, tagPtr); err != nil {
+	if err := bluetooth.StartContinuousScanAndConnectMulti(ctx, chosenAdapters, store, gpsState, resolver, patterns, sessionID, maxConn, tagPtr, blacklist); err != nil {
 		if ctx.Err() != nil {
 			util.Line("[EXIT]", util.ColorGray, "stopping")
 			return
@@ -220,6 +247,24 @@ func main() {
 		fmt.Printf("[ERROR] Fatal: %v\n", err)
 		os.Exit(1)
 	}
+
+	_ = adaptersJoined // keep for potential future debug output
+}
+
+func joinAdaptersDisplay(adapterIDs []string, displayByID map[string]string) string {
+	parts := make([]string, 0, len(adapterIDs))
+	for _, id := range adapterIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if d, ok := displayByID[id]; ok && strings.TrimSpace(d) != "" {
+			parts = append(parts, d)
+		} else {
+			parts = append(parts, id)
+		}
+	}
+	return strings.Join(parts, ", ")
 }
 
 func selectAdapters(interfaces []bluetooth.InterfaceInfo, adaptersFlag string, adapterIndex int) ([]string, error) {
@@ -254,7 +299,7 @@ func selectAdapters(interfaces []bluetooth.InterfaceInfo, adaptersFlag string, a
 	// Interactive: allow a single index or multiple indices separated by commas.
 	fmt.Println("Available Bluetooth interfaces:")
 	for i, inf := range interfaces {
-		fmt.Printf("%d: %s (%s)\n", i, inf.ID, inf.BusInfo)
+		fmt.Printf("%d: %s\n", i, strings.TrimSpace(inf.DisplayName))
 	}
 	s, err := util.PromptString("Select the interface(s) to use (e.g. 0 or 0,1): ")
 	if err != nil {

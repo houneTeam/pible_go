@@ -59,11 +59,14 @@ func StartContinuousScanAndConnect(
 	sessionID int64,
 	maxConnect int,
 	tag *string,
+	blacklist *ConnectBlacklist,
 ) error {
 	adapter := tg.NewAdapter(adapterID)
 	if err := adapter.Enable(); err != nil {
 		return err
 	}
+
+	adapterLabel := AdapterDisplayName(adapterID)
 
 	gpsState.SetScanningStarted(true)
 
@@ -99,6 +102,10 @@ func StartContinuousScanAndConnect(
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
+		}
+
+		if blacklist != nil {
+			blacklist.MaybeReload()
 		}
 
 		// Drain completed connect jobs.
@@ -180,7 +187,7 @@ func StartContinuousScanAndConnect(
 			// Save scan metadata.
 			rssiCopy := rssi
 			tsCopy := ts
-			adapterCopy := adapterID
+			adapterCopy := adapterLabel
 			nameCopy := name
 			macTypeCopy := macType
 			macSubCopy := macSub
@@ -237,6 +244,10 @@ func StartContinuousScanAndConnect(
 			}
 
 			// Connect logic with cooldown, non-blocking.
+			if blacklist != nil && blacklist.Match(name) {
+				continue
+			}
+
 			hasGatt, _ := store.HasGattServices(ctx, mac)
 			if hasGatt {
 				continue
@@ -251,7 +262,7 @@ func StartContinuousScanAndConnect(
 			}
 			lastConnAttempt[mac] = time.Now()
 
-			job := connectJob{mac: mac, addr: d.Addr, name: name, adapterID: adapterID}
+			job := connectJob{mac: mac, addr: d.Addr, name: name, adapterID: adapterLabel}
 			inFlight[mac] = true
 			select {
 			case queue <- job:
@@ -298,7 +309,7 @@ func StartContinuousScanAndConnect(
 					name := util.SafeName(cd.Name)
 					macType := "public_or_unknown"
 					macSub := ""
-					adapterCopy := adapterID
+					adapterCopy := adapterLabel
 					ts := util.NowTimestamp()
 					nameCopy := name
 					typeCopy := "classic"

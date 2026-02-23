@@ -27,6 +27,7 @@ func runManagedAdapterLoop(
 	sessionID int64,
 	maxConnect int,
 	tag *string,
+	blacklist *ConnectBlacklist,
 ) {
 	adapterID = strings.TrimSpace(adapterID)
 	if adapterID == "" {
@@ -118,7 +119,7 @@ func runManagedAdapterLoop(
 			}
 		}()
 
-		_ = runBlueZDiscoveryLoop(workerCtx, adapterID, store, gpsState, resolver, patterns, sessionID, maxConnect, tag)
+		_ = runBlueZDiscoveryLoop(workerCtx, adapterID, store, gpsState, resolver, patterns, sessionID, maxConnect, tag, blacklist)
 		cancel()
 		<-monDone
 
