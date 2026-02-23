@@ -1,0 +1,23 @@
+# Device type patterns for special tagging.
+# You can add new types by appending entries to this list.
+# Fields are intentionally minimal and tailored to BLE advertisement data.
+
+types:
+  - name: cokeon
+    # Required advertised service UUID for Coke-ON VMINFO
+    require_service_uuid: "0A37B48B-BC03-42F6-972F-34A3259DA6EF"
+
+    # iBeacon confirmation inside Apple manufacturer data (company id 76)
+    ibeacon:
+      apple_company_id: 76
+      uuid: "F1FB2A7C-C58A-4F7C-A24E-88607B447AD9"
+      major: 324
+      minor: 28183
+
+    # Alternative marker: manufacturer company id 699 (0x02BB) with 5-byte payload
+    manufacturer_5b:
+      company_id: 699
+      length: 5
+
+    # Alternative marker: device name is base64-encoded 5 bytes
+    name_base64_5b: true
